@@ -22,3 +22,7 @@ from audiolm_pytorch import (
     SoundStream,
     EncodecWrapper
 )
+
+from naturalspeech2_pytorch.utils import (
+    schedulers,
+)

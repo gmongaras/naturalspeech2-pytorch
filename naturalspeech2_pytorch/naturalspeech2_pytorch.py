@@ -32,6 +32,8 @@ from ema_pytorch import EMA
 
 from tqdm.auto import tqdm
 
+from naturalspeech2_pytorch.utils.schedulers.schedulers import LinearScheduler
+
 # constants
 
 mlist = nn.ModuleList
@@ -1029,6 +1031,11 @@ class NaturalSpeech2(nn.Module):
         # weight of the cross entropy loss to residual vq codebooks
 
         self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
+        
+        
+        # Diffusion Scheduler
+        
+        self.scheduler = LinearScheduler(device=self.device, num_steps = self.timesteps)
 
     @property
     def device(self):
@@ -1050,7 +1057,7 @@ class NaturalSpeech2(nn.Module):
 
         time_difference = default(time_difference, self.time_difference)
 
-        time_pairs = self.get_sampling_timesteps(batch, device = device)
+        time_pairs = self.scheduler.get_sampling_timesteps(batch, device = device)
 
         audio = torch.randn(shape, device=device)
 
@@ -1119,7 +1126,7 @@ class NaturalSpeech2(nn.Module):
 
         time_difference = default(time_difference, self.time_difference)
 
-        time_pairs = self.get_sampling_timesteps(batch, device = device)
+        time_pairs = self.scheduler.get_sampling_timesteps(batch, device = device)
 
         audio = torch.randn(shape, device = device)
 
@@ -1127,43 +1134,58 @@ class NaturalSpeech2(nn.Module):
         last_latents = None
 
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
+            
+            # The alpha value is equivalent to sqrt(alpha_bar)
+            # The beta value is equivalent to sqrt(1-alpha_bar)
+            alpha, beta, cumprod = self.scheduler.get_alphas_betas_cumprod(times, batch, device)
+            alpha_next, beta_next, cumprod_next = self.scheduler.get_alphas_betas_cumprod(times-1, batch, device)
+            # sigma = torch.sqrt(1-cumprod)
+            sigma = cond_scale*torch.sqrt(safe_div(1-cumprod_next, 1-cumprod)*beta)
+            
+            # # get times and noise levels
 
-            # get times and noise levels
+            # gamma = self.gamma_schedule(times)
+            # gamma_next = self.gamma_schedule(times_next)
 
-            gamma = self.gamma_schedule(times)
-            gamma_next = self.gamma_schedule(times_next)
+            # padded_gamma, padded_gamma_next = map(partial(right_pad_dims_to, audio), (gamma, gamma_next))
 
-            padded_gamma, padded_gamma_next = map(partial(right_pad_dims_to, audio), (gamma, gamma_next))
+            # alpha, sigma = gamma_to_alpha_sigma(padded_gamma, self.scale)
+            # alpha_next, sigma_next = gamma_to_alpha_sigma(padded_gamma_next, self.scale)
 
-            alpha, sigma = gamma_to_alpha_sigma(padded_gamma, self.scale)
-            alpha_next, sigma_next = gamma_to_alpha_sigma(padded_gamma_next, self.scale)
+            # # add the time delay
 
-            # add the time delay
-
-            times_next = (times_next - time_difference).clamp(min = 0.)
+            # times_next = (times_next - time_difference).clamp(min = 0.)
 
             # predict x0
 
             model_output = self.model.forward_with_cond_scale(audio, times, prompt = prompt, cond_scale = cond_scale)
 
-            # calculate x0 and noise
+            # calculate x0 depending on the way the model was trained
 
             if self.objective == 'x0':
                 x_start = model_output
 
             elif self.objective == 'eps':
-                x_start = safe_div(audio - sigma * model_output, alpha)
+                # x_start = safe_div(audio - sigma * model_output, alpha)
+                x_start = safe_div(audio-torch.sqrt(1-cumprod)*model_output, torch.sqrt(cumprod))
 
             elif self.objective == 'v':
-                x_start = alpha * audio - sigma * model_output
+                x_start = torch.sqrt(cumprod) * audio - torch.sqrt(1-cumprod) * model_output
 
             # get predicted noise
 
-            pred_noise = safe_div(audio - alpha * x_start, sigma)
+            # pred_noise = safe_div(audio - alpha * x_start, sigma)
+            if self.objective == "eps":
+                pred_noise = model_output
+            else:
+                pred_noise = safe_div(audio - torch.sqrt(cumprod)*x_start, torch.sqrt(1-cumprod))
 
             # calculate x next
 
-            audio = x_start * alpha_next + pred_noise * sigma_next
+            # audio = x_start * alpha_next + pred_noise * sigma_next
+            audio = torch.sqrt(cumprod_next)*x_start + \
+                torch.sqrt(1-cumprod_next-sigma**2)*pred_noise + \
+                sigma*torch.randn_like(audio)
 
         return audio
 
