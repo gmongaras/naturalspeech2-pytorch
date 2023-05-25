@@ -32,7 +32,7 @@ from ema_pytorch import EMA
 
 from tqdm.auto import tqdm
 
-from naturalspeech2_pytorch.utils.schedulers.schedulers import LinearScheduler
+from naturalspeech2_pytorch.utils.schedulers.schedulers import LinearScheduler, CosineScheduler, SigmoidScheduler
 
 # constants
 
@@ -971,6 +971,7 @@ class NaturalSpeech2(nn.Module):
         min_snr_gamma = 5,
         train_prob_self_cond = 0.9,
         rvq_cross_entropy_loss_weight = 0.,    # default this to off until we are sure it is working. not totally sold that this is critical
+        score_loss_weight = 0.001,
         scale = 1.                             # this will be set to < 1. for better convergence when training on higher resolution images
     ):
         super().__init__()
@@ -1033,10 +1034,21 @@ class NaturalSpeech2(nn.Module):
 
         self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
         
+        # weight of the score loss term
+        
+        self.score_loss_weight = score_loss_weight
+        
         
         # Diffusion Scheduler
         
-        self.scheduler = LinearScheduler(device=self.device, num_steps = self.timesteps)
+        if noise_schedule == "linear":
+            self.scheduler = LinearScheduler(num_steps = self.timesteps)
+        elif noise_schedule == "cosine":
+            self.scheduler = CosineScheduler(num_steps = self.timesteps)
+        elif noise_schedule == "sigmoid":
+            self.scheduler = SigmoidScheduler(num_steps = self.timesteps)
+        else:
+            raise ValueError(f'invalid noise schedule {noise_schedule}')
 
     @property
     def device(self):
@@ -1264,9 +1276,15 @@ class NaturalSpeech2(nn.Module):
 
         noise = torch.randn_like(audio)
 
-        gamma = self.gamma_schedule(times)
-        padded_gamma = right_pad_dims_to(audio, gamma)
-        alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
+        # gamma = self.gamma_schedule(times)
+        # padded_gamma = right_pad_dims_to(audio, gamma)
+        # alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
+        # Get alphas and gammas from the noise scheduler
+        # alpha = sqrt(cumprod)
+        # sigma = sqrt(1-cumprod)
+        cumprods = self.scheduler.get_cumprods(times, device)
+        alpha = torch.sqrt(cumprods).unsqueeze(-1).unsqueeze(-1)
+        sigma = torch.sqrt(1-cumprods).unsqueeze(-1).unsqueeze(-1)
 
         noised_audio = alpha * audio + sigma * noise
 
@@ -1328,9 +1346,9 @@ class NaturalSpeech2(nn.Module):
         score = -std_inv*noise
         predicted_score = std_inv*(mean-noised_audio)
         score_loss = F.mse_loss(score, predicted_score, reduction = 'none')
-        score_loss = reduce(score_loss, 'b ... -> b', 'mean')
+        score_loss = reduce(score_loss, 'b ... -> b', 'mean').mean()
 
-        return loss + score_loss + self.rvq_cross_entropy_loss_weight * ce_loss
+        return loss + self.score_loss_weight * score_loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
 # trainer
 
