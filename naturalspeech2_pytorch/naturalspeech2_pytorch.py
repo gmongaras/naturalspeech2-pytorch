@@ -976,6 +976,7 @@ class NaturalSpeech2(nn.Module):
         super().__init__()
         self.model = model
         self.codec = codec
+        self.tokenizer = tokenizer
 
         assert exists(codec) or exists(target_sample_hz)
 
@@ -1256,7 +1257,8 @@ class NaturalSpeech2(nn.Module):
 
         # sample random times
 
-        times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
+        # times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
+        times = self.scheduler.sample_random(batch, device)
 
         # noise sample
 
@@ -1306,7 +1308,7 @@ class NaturalSpeech2(nn.Module):
         # cross entropy loss to codebooks
 
         if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes):
-            return loss
+            ce_loss = 0
 
         if self.objective == 'x0':
             x_start = pred
@@ -1317,9 +1319,18 @@ class NaturalSpeech2(nn.Module):
         elif self.objective == 'v':
             x_start = alpha * audio - sigma * pred
 
-        _, ce_loss = self.codec.rq(x_start, codes)
+        if codes is None:
+            _, ce_loss = self.codec.rq(x_start, codes)
+        
+        # Score loss
+        std_inv = self.scheduler.get_lambdas_inv(times, device).unsqueeze(-1).unsqueeze(-1)
+        mean = self.scheduler.get_ps(times, device).unsqueeze(-1).unsqueeze(-1)
+        score = -std_inv*noise
+        predicted_score = std_inv*(mean-noised_audio)
+        score_loss = F.mse_loss(score, predicted_score, reduction = 'none')
+        score_loss = reduce(score_loss, 'b ... -> b', 'mean')
 
-        return loss + self.rvq_cross_entropy_loss_weight * ce_loss
+        return loss + score_loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
 # trainer
 
@@ -1519,7 +1530,8 @@ class Trainer(object):
                     data = next(self.dl).to(device)
 
                     with self.accelerator.autocast():
-                        loss = self.model(data)
+                        prompt = torch.randn(data.shape[0], data.shape[1]).cuda()
+                        loss = self.model(data, prompt=prompt).mean()
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 

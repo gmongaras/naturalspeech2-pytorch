@@ -34,22 +34,13 @@ class LinearScheduler():
         
         # Calculate implicit integral from 0 to t
         def integral_calc(t):
-            return ((max_value-min_value)/num_steps)*t**2 + min_value*t
+            return ((max_value-min_value)/(2*num_steps))*t**2 + min_value*t
         self.integrals = np.array([integral_calc(t) for t in self.timesteps])
         
-        # Calculate the inverse of the integrals
-        self.inverse_integrals = 1/self.integrals
-        
-        # Calculate the p and inverse lambda values
+        # Calculate the p and lambda values
         self.p = np.e**(-0.5*self.integrals)
-        self.lambda_inv = 1/(np.exp(-self.integrals))
-        
-        
-        # Calculate the two terms in the p(z_hat_0, t)-z_t equation
-        self.term1 = np.exp(-0.5*self.integrals)
-        def term2_funct(t):
-            return np.sqrt(((max_value-min_value)/self.num_steps)*t + min_value)*np.exp(-0.5*integral_calc(t))
-        self.term2 = np.array([integrate.quad(term2_funct, 0, t)[0] for t in self.timesteps])
+        self.lambdas = (1-np.exp(-self.integrals))
+        self.lambdas_inv = 1/self.lambdas
         
         
         
@@ -66,6 +57,18 @@ class LinearScheduler():
         return torch.tensor(self.alphas, dtype=torch.float32, device=device)[time].repeat(batch),\
             torch.tensor(self.betas, dtype=torch.float32,  device=device)[time].repeat(batch),\
             torch.tensor(self.alphas_cumprod, dtype=torch.float32,device=device)[time].repeat(batch)
+            
+    def get_lambdas(self, times, device):
+        return torch.tensor(self.lambdas, dtype=torch.float32, device=device)[times]
+    
+    def get_lambdas_inv(self, times, device):
+        return torch.tensor(self.lambdas_inv, dtype=torch.float32, device=device)[times]
+    
+    def get_ps(self, times, device):
+        return torch.tensor(self.p, dtype=torch.float32, device=device)[times]
+            
+    def sample_random(self, batch, device):
+        return torch.tensor(self.timesteps[np.random.randint(0, self.num_steps, batch)], dtype=torch.int, device=device)
         
         
     
