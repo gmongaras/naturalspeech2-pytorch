@@ -144,7 +144,7 @@ class LinearScheduler(Scheduler):
         
         # Calculate the p and lambda values
         self.p = torch.e**(-0.5*self.integrals)
-        self.lambdas = (1-torch.exp(-self.integrals))
+        self.lambdas = (1-torch.exp(-self.integrals)) + 1e-4
         self.lambdas_inv = 1/self.lambdas
         
         
@@ -200,7 +200,7 @@ class CosineScheduler(Scheduler):
         
         # Calculate the p and lambda values
         self.p = torch.e**(-0.5*self.integrals)
-        self.lambdas = (1-torch.exp(-self.integrals))
+        self.lambdas = (1-torch.exp(-self.integrals)) + 1e-4
         self.lambdas_inv = 1/self.lambdas
         
         
@@ -249,13 +249,10 @@ class SigmoidScheduler(Scheduler):
         def integral_calc(t):
             return integrate.quad(cumprod_to_beta, 0, t, args=(sigmoid, (num_steps, start, end, tau, clamp_min)))[0]
         self.integrals = torch.tensor(multiprocess_integral_calc(integral_calc, self.timesteps, 20), dtype=torch.float32).cpu()
-        # def integral_calc(t):
-        #     return integrate.quad(sigmoid, 0, t, args=(num_steps, start, end, tau, clamp_min))[0]
-        # self.integrals = torch.tensor([integral_calc(t) for t in self.timesteps], dtype=torch.float32).cpu()
         
         # Calculate the p and lambda values
         self.p = torch.e**(-0.5*self.integrals)
-        self.lambdas = (1-torch.exp(-self.integrals))
+        self.lambdas = (1-torch.exp(-self.integrals)) + 1e-4
         self.lambdas_inv = 1/self.lambdas
         
         

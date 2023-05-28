@@ -971,7 +971,7 @@ class NaturalSpeech2(nn.Module):
         min_snr_gamma = 5,
         train_prob_self_cond = 0.9,
         rvq_cross_entropy_loss_weight = 0.,    # default this to off until we are sure it is working. not totally sold that this is critical
-        score_loss_weight = 0.001,
+        score_loss_weight = 1,
         scale = 1.                             # this will be set to < 1. for better convergence when training on higher resolution images
     ):
         super().__init__()
