@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 import numpy as np
 import math
 from scipy import integrate
@@ -64,7 +63,6 @@ def multiprocess_integral_calc(function, timesteps, num_workers):
     manager = multiprocessing.Manager()
     out_arr = manager.list([torch.tensor(0, dtype=torch.float32, device=timesteps.device) for t in timesteps])
     
-    # manager.start()
     jobs = []
     num_timesteps = len(timesteps)
     prop = num_timesteps/num_workers                    
@@ -93,8 +91,11 @@ class Scheduler():
     def get_sampling_timesteps(self, batch, device):
         return tuple(torch.tensor([[self.timesteps[i]], [self.timesteps[i-1]]], dtype=torch.int32, device=device).repeat(batch, 1) for i in range(self.num_steps, 0, -1))
     
-    def sample_random(self, batch, device):
+    def sample_timesteps(self, batch, device):
         return self.timesteps[np.random.randint(0, self.num_steps, batch)].to(device)
+    
+    def get_betas(self, times, device):
+        pass
     
     def get_cumprods(self, times, device):
         pass
@@ -125,9 +126,9 @@ class LinearScheduler(Scheduler):
             self.alphas = 1-self.betas
             self.alphas_cumprod = torch.tensor(np.cumprod(self.alphas), dtype=torch.float32).cpu()
         else:
-            self.alphas_cumprod = torch.tensor(linear_new(self.timesteps, min_value), dtype=torch.float32).cpu()
+            self.alphas_cumprod = torch.tensor(linear_new(self.timesteps, num_steps, min_value), dtype=torch.float32).cpu()
+            self.betas = 1-(torch.tensor(linear_new(self.timesteps+1, num_steps, min_value), dtype=torch.float32).cpu()/self.alphas_cumprod)
             max_value = 1
-            # raise NotImplementedError("New linear scheduler not implemented yet")
         
         # Calculate implicit integral from 0 to t
         def integral_calc(t):
@@ -139,8 +140,8 @@ class LinearScheduler(Scheduler):
                 # beta function as the difference between the next step and current step
                 # by beta = 1-(cumprod[t+1]/cumprod[t]). This is the integral of the beta function
                 # which is ln|(T-t)/T)| + t.
-                return torch.log(torch.abs((num_steps-t)/num_steps)) + t
-        self.integrals = torch.tensor([integral_calc(t) for t in self.timesteps], dtype=torch.float32).cpu()
+                return math.log(abs((num_steps-t)/num_steps)) + t
+        self.integrals = torch.tensor([integrate.quad(integral_calc, 0, t)[0] for t in self.timesteps], dtype=torch.float32).cpu().clamp(min = -1e9, max = 1e9)
         
         # Calculate the p and lambda values
         self.p = torch.e**(-0.5*self.integrals)
@@ -149,6 +150,9 @@ class LinearScheduler(Scheduler):
         
         
         
+    def get_betas(self, times, device):
+        return self.betas.to(device)[times]
+    
     def get_cumprods(self, times, device):
         return self.alphas_cumprod.to(device)[times]
             
@@ -185,6 +189,7 @@ class CosineScheduler(Scheduler):
             self.alphas_cumprod = torch.tensor(np.cumprod(self.alphas), dtype=torch.float32).cpu()
         else:
             self.alphas_cumprod = torch.tensor(cosine_new(self.timesteps, num_steps, start, end, tau, clamp_min), dtype=torch.float32).cpu()
+            self.betas = 1-(torch.tensor(cosine_new(self.timesteps, num_steps, start, end, tau, clamp_min), dtype=torch.float32).cpu()/self.alphas_cumprod)
         
         # Calculate implicit integral from 0 to t
         # Since the cosine scheduler has a really complicated
@@ -195,8 +200,7 @@ class CosineScheduler(Scheduler):
         def integral_calc(t):
             return integrate.quad(cosine_orig, 0, t, args=(s, num_steps))[0] if original \
                 else integrate.quad(cumprod_to_beta, 0, t, args=(cosine_new, (num_steps, start, end, tau, clamp_min)))[0]
-        # self.integrals = torch.tensor([integral_calc(t) for t in self.timesteps], dtype=torch.float32).cpu()
-        self.integrals = torch.tensor(multiprocess_integral_calc(integral_calc, self.timesteps, 20), dtype=torch.float32).cpu()
+        self.integrals = torch.tensor(multiprocess_integral_calc(integral_calc, self.timesteps, 20), dtype=torch.float32).cpu().clamp(min = -1e9, max = 1e9)
         
         # Calculate the p and lambda values
         self.p = torch.e**(-0.5*self.integrals)
@@ -205,6 +209,9 @@ class CosineScheduler(Scheduler):
         
         
         
+    def get_betas(self, times, device):
+        return self.betas.to(device)[times]
+    
     def get_cumprods(self, times, device):
         return self.alphas_cumprod.to(device)[times]
             
@@ -232,16 +239,8 @@ class SigmoidScheduler(Scheduler):
         super().__init__(num_steps)
         
         # Variance scheduler beta values
-        self.alphas_cumprod = torch.tensor(sigmoid(self.timesteps, num_steps, start, end, tau, clamp_min), dtype=torch.float32).cpu()
-        def a(t, T, start, end, tau, clamp_min):
-            start = torch.tensor(start)
-            end = torch.tensor(end)
-            tau = torch.tensor(tau)
-            v_end = torch.tensor(end / tau).sigmoid()
-            num = v_end - ((t*(end-start) + start) / tau).sigmoid()
-            den = v_end - (((t-1)*(end-start) + start) / tau).sigmoid()
-            return 1- (num/den)
-        a(self.timesteps, num_steps, start, end, tau, clamp_min)
+        self.alphas_cumprod = torch.tensor(sigmoid(self.timesteps, num_steps, start, end, tau, clamp_min), dtype=torch.float32).cpu().clamp(min = -1e9, max = 1e9)
+        self.betas = 1-(torch.tensor(sigmoid(self.timesteps, num_steps, start, end, tau, clamp_min), dtype=torch.float32).cpu()/self.alphas_cumprod)
         
         # Calculate implicit integral from 0 to t
         # Since the cosine scheduler has a really complicated
@@ -257,6 +256,9 @@ class SigmoidScheduler(Scheduler):
         
         
         
+    def get_betas(self, times, device):
+        return self.betas.to(device)[times]
+    
     def get_cumprods(self, times, device):
         return self.alphas_cumprod.to(device)[times]
             

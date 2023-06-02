@@ -1150,8 +1150,9 @@ class NaturalSpeech2(nn.Module):
             
             # The alpha value is equivalent to sqrt(alpha_bar)
             # The beta value is equivalent to sqrt(1-alpha_bar)
-            alpha, beta, cumprod = self.scheduler.get_alphas_betas_cumprod(times, batch, device)
-            alpha_next, beta_next, cumprod_next = self.scheduler.get_alphas_betas_cumprod(times-1, batch, device)
+            beta = self.scheduler.get_betas(times.repeat(batch), device)
+            cumprod = self.scheduler.get_cumprods(times.repeat(batch), device)
+            cumprod_next = self.scheduler.get_cumprods(times_next.repeat(batch), device)
             # sigma = torch.sqrt(1-cumprod)
             sigma = cond_scale*torch.sqrt(safe_div(1-cumprod_next, 1-cumprod)*beta)
             
@@ -1270,7 +1271,7 @@ class NaturalSpeech2(nn.Module):
         # sample random times
 
         # times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
-        times = self.scheduler.sample_random(batch, device)
+        times = self.scheduler.sample_timesteps(batch, device)
 
         # noise sample
 
@@ -1285,8 +1286,12 @@ class NaturalSpeech2(nn.Module):
         cumprods = self.scheduler.get_cumprods(times, device)
         alpha = torch.sqrt(cumprods).unsqueeze(-1).unsqueeze(-1)
         sigma = torch.sqrt(1-cumprods).unsqueeze(-1).unsqueeze(-1)
+        
+        std_inv = self.scheduler.get_lambdas_inv(times, device).unsqueeze(-1).unsqueeze(-1)
+        mean = self.scheduler.get_ps(times, device).unsqueeze(-1).unsqueeze(-1)
 
-        noised_audio = alpha * audio + sigma * noise
+        # noised_audio = alpha * audio + sigma * noise
+        noised_audio = mean*audio + std_inv*noise
 
         # predict and take gradient step
 
@@ -1341,10 +1346,8 @@ class NaturalSpeech2(nn.Module):
             _, ce_loss = self.codec.rq(x_start, codes)
         
         # Score loss
-        std_inv = self.scheduler.get_lambdas_inv(times, device).unsqueeze(-1).unsqueeze(-1)
-        mean = self.scheduler.get_ps(times, device).unsqueeze(-1).unsqueeze(-1)
         score = -std_inv*noise
-        predicted_score = std_inv*(mean-noised_audio)
+        predicted_score = std_inv*(mean*x_start-noised_audio)
         score_loss = F.mse_loss(score, predicted_score, reduction = 'none')
         score_loss = reduce(score_loss, 'b ... -> b', 'mean').mean()
 
